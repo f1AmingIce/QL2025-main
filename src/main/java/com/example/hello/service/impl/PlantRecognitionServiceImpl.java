@@ -1,8 +1,10 @@
 package com.example.hello.service.impl;
 
 import com.example.hello.entity.Plant;
+import com.example.hello.entity.PlantVector;
 import com.example.hello.service.PlantRecognitionService;
 import com.example.hello.service.PlantService;
+import com.example.hello.service.PlantVectorService;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.*;
@@ -16,6 +18,7 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.ArrayList;
 
 /**
  * 植物识别服务实现类
@@ -31,6 +34,10 @@ public class PlantRecognitionServiceImpl implements PlantRecognitionService {
     // 注入植物服务，用于数据库操作
     @Autowired
     private PlantService plantService;
+    
+    // 注入植物向量服务，用于向量数据库操作
+    @Autowired
+    private PlantVectorService plantVectorService;
 
     // 从配置文件注入LLM API地址
     @Value("${llm.api-url}")
@@ -43,15 +50,27 @@ public class PlantRecognitionServiceImpl implements PlantRecognitionService {
     // 从配置文件注入Chroma向量数据库地址
     @Value("${chroma.server-url}")
     private String chromaServerUrl;
+    
+    // 相似度阈值，用于判断向量相似度是否足够高
+    private static final float SIMILARITY_THRESHOLD = 0.8f;
 
     /**
      * 识别植物图片并返回植物信息
+     * 优化后的流程：先通过向量相似度查找，若不存在则调用大模型识别
      * @param file 上传的植物图片文件
      * @return 识别出的植物信息，未识别则返回null
      */
     @Override
     public Plant recognizePlant(MultipartFile file) {
         try {
+            // 1. 首先尝试通过向量相似度查找已有的植物
+            Plant similarPlant = findSimilarPlantByVector(file);
+            if (similarPlant != null) {
+                // 如果找到相似植物，直接返回
+                return similarPlant;
+            }
+            
+            // 2. 如果没有找到相似植物，则调用大模型进行识别
             // 将图片文件转换为Base64编码字符串
             byte[] imageBytes = file.getBytes();
             String base64Image = Base64Utils.encodeToString(imageBytes);
@@ -198,13 +217,15 @@ public class PlantRecognitionServiceImpl implements PlantRecognitionService {
             // 创建向量存储请求参数
             Map<String, Object> requestBody = new HashMap<>();
             // 使用植物ID作为向量唯一标识
-            requestBody.put("ids", new String[]{"plant_" + plant.getId()});
+            String vectorId = "plant_" + plant.getId();
+            requestBody.put("ids", new String[]{vectorId});
             // 生成并添加图像向量
-            requestBody.put("embeddings", new float[][]{generateImageEmbedding(file)});
+            float[] imageEmbedding = generateImageEmbedding(file);
+            requestBody.put("embeddings", new float[][]{imageEmbedding});
             // 添加植物元数据
             requestBody.put("metadatas", new Map[]{Map.of(
-                "name", plant.getName()
-               // "scientific_name", plant.getScientificName()
+                "name", plant.getName(),
+                "plant_id", plant.getId().toString()
             )});
 
             // 创建HTTP请求实体
@@ -219,8 +240,17 @@ public class PlantRecognitionServiceImpl implements PlantRecognitionService {
                 Map.class
             );
 
-            // 返回存储是否成功
-            return response.getStatusCode() == HttpStatus.OK;
+            // 如果存储成功，同时保存向量信息到数据库
+            if (response.getStatusCode() == HttpStatus.OK) {
+                PlantVector plantVector = new PlantVector();
+                plantVector.setPlantId(plant.getId());
+                plantVector.setVectorId(vectorId);
+                plantVector.setSimilarityThreshold(SIMILARITY_THRESHOLD);
+                plantVectorService.savePlantVector(plantVector);
+                return true;
+            }
+            
+            return false;
         } catch (Exception e) {
             // 打印异常堆栈信息
             e.printStackTrace();
@@ -288,6 +318,88 @@ public class PlantRecognitionServiceImpl implements PlantRecognitionService {
             return new float[512];
         }
     }
+    /**
+     * 通过图片向量查找相似植物
+     * @param file 植物图片文件
+     * @return 找到的相似植物，如果没有找到则返回null
+     */
+    @Override
+    public Plant findSimilarPlantByVector(MultipartFile file) {
+        try {
+            // 生成图片向量
+            float[] imageEmbedding = generateImageEmbedding(file);
+            
+            // 创建HTTP请求头
+            HttpHeaders headers = new HttpHeaders();
+            headers.setContentType(MediaType.APPLICATION_JSON);
+            
+            // 创建请求体参数
+            Map<String, Object> requestBody = new HashMap<>();
+            requestBody.put("query_embeddings", new float[][]{imageEmbedding});
+            requestBody.put("n_results", 1); // 只返回最相似的一个结果
+            
+            // 创建HTTP请求实体
+            HttpEntity<Map<String, Object>> request = new HttpEntity<>(requestBody, headers);
+            
+            // 构建Chroma API完整URL，用于查询相似向量
+            String chromaUrl = chromaServerUrl + (chromaServerUrl.endsWith("/") ? "" : "/") + "api/v1/collections/plant_collection/query";
+            
+            // 调用Chroma API查询相似向量
+            ResponseEntity<Map> response = restTemplate.postForEntity(chromaUrl, request, Map.class);
+            
+            // 检查响应状态是否为成功且响应体不为空
+            if (response.getStatusCode() == HttpStatus.OK && response.getBody() != null) {
+                Map<String, Object> responseBody = response.getBody();
+                
+                // 提取相似度数据
+                List<List<Double>> distances = (List<List<Double>>) responseBody.get("distances");
+                // 提取向量ID数据
+                List<List<String>> ids = (List<List<String>>) responseBody.get("ids");
+                // 提取元数据
+                List<List<Map<String, Object>>> metadatas = (List<List<Map<String, Object>>>) responseBody.get("metadatas");
+                
+                // 检查是否有结果返回
+                if (distances != null && !distances.isEmpty() && 
+                    distances.get(0) != null && !distances.get(0).isEmpty() &&
+                    ids != null && !ids.isEmpty() && 
+                    ids.get(0) != null && !ids.get(0).isEmpty()) {
+                    
+                    // 获取第一个结果的相似度
+                    double similarity = 1.0 - distances.get(0).get(0); // Chroma返回的是距离，需要转换为相似度
+                    // 获取第一个结果的向量ID
+                    String vectorId = ids.get(0).get(0);
+                    
+                    // 如果相似度高于阈值，则认为找到了相似植物
+                    if (similarity >= SIMILARITY_THRESHOLD) {
+                        // 从元数据中获取植物ID
+                        String plantId = (String) metadatas.get(0).get(0).get("plant_id");
+                        if (plantId != null) {
+                            // 根据植物ID查询植物信息
+                            return plantService.getPlantById(Long.parseLong(plantId));
+                        } else {
+                            // 如果元数据中没有植物ID，则尝试从向量ID中提取
+                            if (vectorId.startsWith("plant_")) {
+                                String idStr = vectorId.substring(6); // 去掉"plant_"前缀
+                                try {
+                                    Long id = Long.parseLong(idStr);
+                                    return plantService.getPlantById(id);
+                                } catch (NumberFormatException e) {
+                                    // 转换失败，忽略
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            
+            // 没有找到相似植物或相似度不够高
+            return null;
+        } catch (Exception e) {
+            e.printStackTrace();
+            return null;
+        }
+    }
+    
     /**
      * 保存已识别的植物信息到数据库
      * @param plant 植物实体对象

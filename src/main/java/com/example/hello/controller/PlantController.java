@@ -40,8 +40,9 @@ public class PlantController {
 
     /**
      * 植物识别接口
+     * 优化后的流程：先通过向量相似度查找，若不存在则调用大模型识别
      * @param file 上传的植物图片文件
-     * @return 识别结果响应
+     * @return 识别结果响应，只包含植物名称
      */
     @PostMapping("/identify")
     public ResponseEntity<PlantResponseDTO> identifyPlant(@RequestParam("file") MultipartFile file) {
@@ -67,26 +68,19 @@ public class PlantController {
             // 构建可访问的图片URL
             String imageUrl = "/uploads/" + fileName;
 
-            // 调用植物识别服务处理图片
+            // 调用优化后的植物识别服务处理图片
+            // 该服务会先通过向量相似度查找，若不存在则调用大模型识别
             Plant plant = plantRecognitionService.recognizePlant(file);
             
-            // 设置图片URL到植物对象
+            // 设置图片URL到植物对象并保存
             if (plant != null) {
                 plant.setImageUrl(imageUrl);
-                // 保存更新后的植物信息
                 plantService.savePlant(plant);
-            }
-            // 检查识别结果是否不为空
-            if (plant != null) {
-                // 创建响应DTO对象
+                
+                // 创建简化的响应DTO对象，只包含植物名称
                 PlantResponseDTO responseDTO = new PlantResponseDTO();
-                // 只设置植物名称到DTO
                 responseDTO.setName(plant.getName());
-                // 其他信息暂时注释掉
-                // responseDTO.setRecognitionAccuracy(plant.getRecognitionAccuracy());
-                // responseDTO.setImageUrl(plant.getImageUrl());
-                // responseDTO.setPlantId(plant.getId());
-                // responseDTO.setRecognitionTime(java.time.LocalDateTime.now().toString());
+                
                 // 返回成功响应和DTO数据
                 return new ResponseEntity<>(responseDTO, HttpStatus.OK);
             } else {
@@ -104,7 +98,7 @@ public class PlantController {
     /**
      * 获取历史识别记录
      * @param limit 限制返回记录数量，默认为10
-     * @return 历史识别记录列表
+     * @return 历史识别记录列表，只包含植物名称
      */
     @GetMapping("/history")
     public ResponseEntity<List<PlantResponseDTO>> getPlantHistory(@RequestParam(value = "limit", defaultValue = "10") int limit) {
@@ -113,17 +107,10 @@ public class PlantController {
             List<Plant> plants = plantService.getRecentPlants(limit);
             List<PlantResponseDTO> responseDTOs = new ArrayList<>();
             
-            // 转换为响应DTO
+            // 转换为响应DTO，只包含植物名称
             for (Plant plant : plants) {
                 PlantResponseDTO dto = new PlantResponseDTO();
                 dto.setName(plant.getName());
-                dto.setRecognitionAccuracy(plant.getRecognitionAccuracy());
-                dto.setImageUrl(plant.getImageUrl());
-                dto.setPlantId(plant.getId());
-                // 使用更新时间作为识别时间
-                dto.setRecognitionTime(plant.getUpdateTime() != null ? 
-                        plant.getUpdateTime().toString() : 
-                        plant.getCreateTime().toString());
                 responseDTOs.add(dto);
             }
             
@@ -137,7 +124,7 @@ public class PlantController {
     /**
      * 根据ID获取植物详情
      * @param id 植物ID
-     * @return 植物详情
+     * @return 植物详情，只包含植物名称
      */
     @GetMapping("/{id}")
     public ResponseEntity<PlantResponseDTO> getPlantById(@PathVariable("id") Long id) {
@@ -146,16 +133,9 @@ public class PlantController {
             Plant plant = plantService.getPlantById(id);
             
             if (plant != null) {
-                // 转换为响应DTO
+                // 转换为响应DTO，只包含植物名称
                 PlantResponseDTO dto = new PlantResponseDTO();
                 dto.setName(plant.getName());
-                dto.setRecognitionAccuracy(plant.getRecognitionAccuracy());
-                dto.setImageUrl(plant.getImageUrl());
-                dto.setPlantId(plant.getId());
-                dto.setRecognitionTime(plant.getUpdateTime() != null ? 
-                        plant.getUpdateTime().toString() : 
-                        plant.getCreateTime().toString());
-                
                 return new ResponseEntity<>(dto, HttpStatus.OK);
             } else {
                 return new ResponseEntity<>(HttpStatus.NOT_FOUND);
