@@ -2,14 +2,20 @@
 
 ## 项目简介
 
-本项目是一个基于SpringBoot、MyBatis-Plus和SpringMVC开发的植物识别后端程序，可以接收来自微信小程序的请求，实现植物图片的上传、识别和结果返回功能。项目采用RESTful API设计风格，具有良好的可读性和可维护性。
+本项目是一个基于SpringBoot和SpringMVC开发的植物识别后端程序，使用内存缓存和Milvus向量数据库存储数据，可以接收来自微信小程序的请求，实现植物图片的上传、识别和结果返回功能。项目采用RESTful API设计风格，具有良好的可读性和可维护性。
+
+## 最近更新
+
+- **2023-11-15**: 修复了Milvus向量服务实现中的编译错误，包括：
+  - 修复了`withExtraParam`方法参数类型不匹配问题
+  - 解决了`SearchResultsWrapper.IDScore`类中`getId()`方法未定义的问题
+  - 修复了`SearchResult`类型兼容性问题
 
 ## 技术栈
 
 - **框架**: Spring Boot 3.3.2
-- **ORM**: MyBatis-Plus 3.5.5
-- **数据库**: MySQL
-- **向量数据库**: Chroma
+- **数据存储**: 内存缓存 + Milvus 向量数据库
+- **向量数据库**: Milvus
 - **大模型集成**: 支持调用LLM API进行植物识别
 
 ## 功能特点
@@ -103,12 +109,25 @@ llm.api-url=https://api.doubao.com/plant-recognition
 llm.api-key=your_api_key_here
 ```
 
-### Chroma向量数据库配置
+### 向量数据库配置
+
+#### Chroma向量数据库配置
 
 在`application.properties`中配置Chroma服务器地址：
 
 ```properties
 chroma.server-url=http://localhost:8000
+```
+
+#### Milvus向量数据库配置
+
+在`application.properties`中配置Milvus服务器地址和参数：
+
+```properties
+milvus.host=localhost
+milvus.port=19530
+milvus.collection-name=plant_vectors
+milvus.dimension=1536
 ```
 
 ### 微信小程序配置
